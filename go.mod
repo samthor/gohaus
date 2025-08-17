@@ -2,7 +2,7 @@ module github.com/samthor/gohaus
 
 go 1.25.0
 
-replace github.com/samthor/daikinac => /Users/Sam/Desktop/src/github.com/samthor/daikinac
+// replace github.com/samthor/daikinac => /Users/Sam/Desktop/src/github.com/samthor/daikinac
 
 require github.com/samthor/daikinac v0.0.0-20250816012424-ec0c7d7c3632
 
