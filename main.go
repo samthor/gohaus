@@ -6,7 +6,6 @@ import (
 	"log"
 	"math/rand/v2"
 	"net/url"
-	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
@@ -38,7 +37,7 @@ func main() {
 		},
 
 		OnConnectionUp: func(cm *autopaho.ConnectionManager, c *paho.Connack) {
-			log.Printf("conn up")
+			log.Printf("mqtt connection up")
 		},
 
 		KeepAlive: 10,
@@ -77,20 +76,12 @@ func main() {
 		ctx:    context.Background(),
 	}
 
-	// _, err = pw.c.Subscribe(context.Background(), &paho.Subscribe{
-	// 	Subscriptions: []paho.SubscribeOptions{
-	// 		{Topic: "#", QoS: 0},
-	// 	},
-	// })
-	// if err != nil {
-	// 	panic(err)
-	// }
 	for daikinID, device := range devices {
-		Register(pw, fmt.Sprintf("virt/daikin-ac/%s", daikinID), func(s *DaikinValues) (DaikinValues, error) {
-			return runDaikin(pw.ctx, device, s)
-		})
+		runner := func(readSet func() (set *DaikinValues)) (DaikinValues, error) {
+			return runDaikin(pw.ctx, device, readSet)
+		}
+		Register(pw, fmt.Sprintf("virt/daikin-ac/%s", daikinID), runner)
 	}
 
-	log.Printf("connected?")
-	time.Sleep(time.Second * 200)
+	<-make(chan bool) // sleep forever
 }
