@@ -27,6 +27,10 @@ func ptrTo[X any](x X) *X {
 	return &x
 }
 
+const (
+	DefaultHost = "192.168.91.1"
+)
+
 type TEDApi struct {
 	DIN    string
 	Secret string
@@ -37,19 +41,21 @@ type TEDApi struct {
 }
 
 type Query struct {
-	Query     string         // string graphQL query
-	Signature []byte         // tesla-private-key sig: https://github.com/jasonacox/Powerwall-Dashboard/discussions/392#discussioncomment-12023958
-	Vars      map[string]any // interpolated into $-variables in Query
+	Query     string          // string graphQL query
+	Signature []byte          // tesla-private-key sig: https://github.com/jasonacox/Powerwall-Dashboard/discussions/392#discussioncomment-12023958
+	Vars      json.RawMessage // interpolated into $-variables in Query (likely map[string]any)
 }
 
+// Query performs a query on the device.
 func (td *TEDApi) Query(ctx context.Context, q Query) (out json.RawMessage, err error) {
 	return td.QueryDevice(ctx, q, "")
 }
 
+// Query performs a query on the leader, but potentially targeted at another device (e.g., follower).
 func (td *TEDApi) QueryDevice(ctx context.Context, q Query, customDin string) (out json.RawMessage, err error) {
-	bb := []byte("{}")
+	vars := []byte("{}")
 	if q.Vars != nil {
-		bb, err = json.Marshal(q.Vars)
+		vars, err = json.Marshal(q.Vars)
 		if err != nil {
 			return nil, err
 		}
@@ -70,13 +76,10 @@ func (td *TEDApi) QueryDevice(ctx context.Context, q Query, customDin string) (o
 			Recipient:       &Participant{Id: &Participant_Din{Din: recipientDin}},
 			Payload: &QueryType{
 				Send: &PayloadQuerySend{
-					Num: ptrTo(int32(2)),
-					Payload: &PayloadString{
-						Value: 1,
-						Text:  q.Query,
-					},
-					Code: q.Signature,
-					B:    &StringValue{Value: string(bb)},
+					Num:     ptrTo(int32(2)),
+					Payload: &PayloadString{Value: 1, Text: q.Query},
+					Code:    q.Signature,
+					B:       &StringValue{Value: string(vars)},
 				},
 			},
 		},
@@ -90,13 +93,15 @@ func (td *TEDApi) QueryDevice(ctx context.Context, q Query, customDin string) (o
 	}
 
 	if pbRes.Message == nil || pbRes.Message.Payload == nil || pbRes.Message.Payload.Recv == nil {
-		return nil, fmt.Errorf("missing result text")
+		return nil, fmt.Errorf("missing result JSON")
 	}
 
 	out = []byte(pbRes.Message.Payload.Recv.Text)
 	return out, nil
 }
 
+// Config reads a config file from the device.
+// Known files include "config.json".
 func (td *TEDApi) Config(ctx context.Context, file string) (out []byte, err error) {
 	din, err := td.getDIN(ctx)
 	if err != nil {
@@ -110,10 +115,7 @@ func (td *TEDApi) Config(ctx context.Context, file string) (out []byte, err erro
 			Recipient:       &Participant{Id: &Participant_Din{Din: din}},
 			Config: &ConfigType{
 				Config: &ConfigType_Send{
-					Send: &PayloadConfigSend{
-						Num:  1,
-						File: file,
-					},
+					Send: &PayloadConfigSend{Num: 1, File: file},
 				},
 			},
 		},
@@ -134,7 +136,7 @@ func (td *TEDApi) Config(ctx context.Context, file string) (out []byte, err erro
 
 func (td *TEDApi) buildUrl(pathname string) (url string) {
 	// use default _or_ overwritten host
-	host := "192.168.91.1"
+	host := DefaultHost
 	if td.Host != "" {
 		host = td.Host
 	}
@@ -206,6 +208,7 @@ func (td *TEDApi) internalRequest(ctx context.Context, pathname string, body io.
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode != 200 {
+		// if we get 429 or 503, the PW could be rate-limiting us
 		return nil, fmt.Errorf("non-200 status: %v", httpResp.Status)
 	}
 	return io.ReadAll(httpResp.Body)
