@@ -29,6 +29,92 @@ var (
 	}
 )
 
+type SimpleStatus struct {
+	Shutdown          bool    `json:"shutdown"`
+	Island            bool    `json:"island"`
+	BatteryEnergy     int     `json:"battery"`
+	BatteryFullEnergy int     `json:"batteryFull"`
+	PowerBattery      float64 `json:"powerBattery"`
+	PowerSite         float64 `json:"powerSite"`
+	PowerLoad         float64 `json:"powerLoad"`
+	PowerSolar        float64 `json:"powerSolar"`
+	PowerSolarRGM     float64 `json:"powerSolarRGM"`
+	PowerGenerator    float64 `json:"powerGenerator"`
+	PowerConductor    float64 `json:"powerConductor"`
+}
+
+func GetSimpleStatus(ctx context.Context, td *TEDApi) (status *SimpleStatus, err error) {
+	out, err := td.Query(ctx, QueryStatus)
+	if err != nil {
+		return nil, err
+	}
+
+	type statusResponse struct {
+		Control struct {
+			Alerts struct {
+				Active []string `json:"active"`
+			} `json:"alerts"`
+			BatteryBlocks []struct {
+				DIN            string   `json:"din"`
+				DisableReasons []string `json:"disableReasons"`
+			} `json:"batteryBlocks"`
+			Islanding struct {
+				ContactorClosed    bool     `json:"contactorClosed"`
+				CustomerIslandMode string   `json:"customerIslandMode"`
+				DisableReasons     []string `json:"disableReasons"`
+				GridOK             bool     `json:"gridOK"`
+				MicroGridOK        bool     `json:"microGridOK"`
+			} `json:"islanding"`
+			MeterAggregates []struct {
+				Location   string  `json:"location"`
+				RealPowerW float64 `json:"realPowerW"`
+			} `json:"meterAggregates"`
+			PVInverters []struct {
+				// TODO: not sure what goes here - maybe for PW2?
+			} `json:"pvInverters"`
+			SiteShutdown struct {
+				IsShutdown bool     `json:"isShutDown"`
+				Reasons    []string `json:"reasons"`
+			} `json:"siteShutdown"`
+			SystemStatus struct {
+				NominalEnergyRemainingWh int `json:"nominalEnergyRemainingWh"`
+				NominalFullPackEnergyWh  int `json:"nominalFullPackEnergyWh"`
+			} `json:"systemStatus"`
+		} `json:"control"`
+		// TODO: get voltage etc
+	}
+	var response statusResponse
+
+	err = json.Unmarshal(out, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	powerFor := func(s string) float64 {
+		for _, m := range response.Control.MeterAggregates {
+			if m.Location == s {
+				return m.RealPowerW
+			}
+		}
+		return 0.0
+	}
+
+	status = &SimpleStatus{
+		Shutdown:          response.Control.SiteShutdown.IsShutdown,
+		Island:            !response.Control.Islanding.ContactorClosed,
+		BatteryEnergy:     response.Control.SystemStatus.NominalEnergyRemainingWh,
+		BatteryFullEnergy: response.Control.SystemStatus.NominalFullPackEnergyWh,
+		PowerBattery:      powerFor("BATTERY"),
+		PowerSite:         powerFor("SITE"),
+		PowerLoad:         powerFor("LOAD"),
+		PowerSolar:        powerFor("SOLAR"),
+		PowerSolarRGM:     powerFor("SOLAR_RGM"),
+		PowerGenerator:    powerFor("GENERATOR"),
+		PowerConductor:    powerFor("CONDUCTOR"),
+	}
+	return status, nil
+}
+
 func GetStatus(ctx context.Context, td *TEDApi) (err error) {
 	out, err := td.Query(ctx, QueryStatus)
 	if err != nil {

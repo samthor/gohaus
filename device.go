@@ -21,12 +21,9 @@ type devicePacket struct {
 // This is a func as the Set may arrive 'late'.
 type HandlerFunc[Set, Read any] func(readSet func() (out *Set)) (Read, error)
 
-// BuildHandlerFunc creates a handler for z2m-like virtual node.
-type BuildHandlerFunc[Set, Read any] func(announce func(Read)) (HandlerFunc[Set, Read], error)
-
 // Register creates a virtual z2m-like virtual device rooted at the given topic.
 // The handler must use the `readSet` function to check if there's data to send, otherwise it will be called forever.
-func Register[Set, Read any](pw *pahoWrap, topic string, build BuildHandlerFunc[Set, Read]) {
+func Register[Set, Read any](pw *pahoWrap, topic string, handler HandlerFunc[Set, Read]) {
 
 	announce := func(out Read) {
 		// failure to Marshal/Publish are fatal problems
@@ -40,11 +37,6 @@ func Register[Set, Read any](pw *pahoWrap, topic string, build BuildHandlerFunc[
 		}
 	}
 
-	handler, err := build(announce)
-	if err != nil {
-		log.Fatalf("could not build handler for topic=%v err=%v", topic, err)
-	}
-
 	topicAll := fmt.Sprintf("%s/#", topic)
 	ch := make(chan devicePacket)
 
@@ -56,7 +48,7 @@ func Register[Set, Read any](pw *pahoWrap, topic string, build BuildHandlerFunc[
 		}
 	})
 
-	_, err = pw.c.Subscribe(context.Background(), &paho.Subscribe{
+	_, err := pw.c.Subscribe(context.Background(), &paho.Subscribe{
 		Subscriptions: []paho.SubscribeOptions{
 			{Topic: topicAll, QoS: 1},
 		},

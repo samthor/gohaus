@@ -5,33 +5,19 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math/rand/v2"
-	"time"
 
 	"github.com/samthor/daikinac"
 	"github.com/samthor/gohaus/api/powerwall"
 )
 
 var (
-	flagURL = flag.String("url", "mqtt://mqtt.haus.samthor.au:1883", "mqtt url to connect to")
+	flagURL         = flag.String("url", "mqtt://mqtt.haus.samthor.au:1883", "mqtt url to connect to")
+	flagTeslaSecret = flag.String("gw_pw", "", "Powerwall secret")
 )
 
 func main() {
 	flag.Parse()
 	var err error
-
-	td := &powerwall.TEDApi{
-		Secret: "TWDTPKHSGR",
-	}
-	err = powerwall.GetConfig(context.Background(), td)
-	if err != nil {
-		log.Fatalf("couldn't fetch Tesla config: %v", err)
-	}
-
-	err = powerwall.GetStatus(context.Background(), td)
-	if err != nil {
-		log.Fatalf("couldn't fetch Tesla status: %v", err)
-	}
 
 	paho, err := connectToPaho(context.Background(), *flagURL)
 	if err != nil {
@@ -56,25 +42,33 @@ func config(ctx context.Context, pw *pahoWrap) {
 	}
 
 	for daikinID, device := range devices {
-		build := func(announce func(DaikinValues)) (HandlerFunc[DaikinValues, DaikinValues], error) {
-			// cannot announce, just returns runner
-			return func(readSet func() (set *DaikinValues)) (DaikinValues, error) {
-				return runDaikin(context.Background(), device, readSet)
-			}, nil
+		runner := func(readSet func() (set *DaikinValues)) (DaikinValues, error) {
+			return runDaikin(context.Background(), device, readSet)
 		}
-		Register(pw, fmt.Sprintf("virt/daikin-ac/%s", daikinID), build)
+		Register(pw, fmt.Sprintf("virt/daikin-ac/%s", daikinID), runner)
+	}
+
+	// -- battery
+
+	if *flagTeslaSecret != "" {
+		td := &powerwall.TEDApi{Secret: *flagTeslaSecret}
+
+		runner := func(readSet func() (out *struct{})) (powerwall.SimpleStatus, error) {
+			readSet()
+			status, err := powerwall.GetSimpleStatus(context.Background(), td)
+			if err != nil {
+				return powerwall.SimpleStatus{}, err
+			}
+			return *status, nil
+		}
+		Register(pw, "virt/powerwall", runner)
 	}
 
 	// -- virtual day/night
 
-	Register(pw, "virt/earth3", func(announce func(EarthValues)) (HandlerFunc[struct{}, EarthValues], error) {
-		go func() {
-			time.Sleep(time.Millisecond * time.Duration(4000+rand.Int64N(8000)))
-		}()
-
-		return func(readSet func() (out *struct{})) (EarthValues, error) {
-			return EarthValues{}, nil
-		}, nil
+	Register(pw, "virt/earth3", func(readSet func() (out *struct{})) (EarthValues, error) {
+		readSet()
+		return EarthValues{}, nil // TODO
 	})
 
 }
