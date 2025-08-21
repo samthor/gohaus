@@ -6,6 +6,8 @@ go 1.25.0
 
 require github.com/samthor/daikinac v0.0.0-20250816012424-ec0c7d7c3632
 
+require google.golang.org/protobuf v1.36.8 // indirect
+
 require (
 	github.com/eclipse/paho.golang v0.22.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect

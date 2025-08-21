@@ -8,15 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
 )
-
-type pahoWrap struct {
-	c      *autopaho.ConnectionManager
-	router *paho.StandardRouter
-	ctx    context.Context
-}
 
 type devicePacket struct {
 	payload []byte
@@ -28,7 +21,30 @@ type devicePacket struct {
 // This is a func as the Set may arrive 'late'.
 type HandlerFunc[Set, Read any] func(readSet func() (out *Set)) (Read, error)
 
-func Register[Set, Read any](pw *pahoWrap, topic string, handler HandlerFunc[Set, Read]) {
+// BuildHandlerFunc creates a handler for z2m-like virtual node.
+type BuildHandlerFunc[Set, Read any] func(announce func(Read)) (HandlerFunc[Set, Read], error)
+
+// Register creates a virtual z2m-like virtual device rooted at the given topic.
+// The handler must use the `readSet` function to check if there's data to send, otherwise it will be called forever.
+func Register[Set, Read any](pw *pahoWrap, topic string, build BuildHandlerFunc[Set, Read]) {
+
+	announce := func(out Read) {
+		// failure to Marshal/Publish are fatal problems
+		payload, err := json.Marshal(out)
+		if err != nil {
+			log.Fatalf("couldn't JSON-encode output for topic=%v out=%+v err=%v", topic, out, err)
+		}
+		_, err = pw.c.Publish(pw.ctx, &paho.Publish{Topic: topic, Payload: payload})
+		if err != nil {
+			log.Fatalf("failed to publish for topic=%v err=%v", topic, err)
+		}
+	}
+
+	handler, err := build(announce)
+	if err != nil {
+		log.Fatalf("could not build handler for topic=%v err=%v", topic, err)
+	}
+
 	topicAll := fmt.Sprintf("%s/#", topic)
 	ch := make(chan devicePacket)
 
@@ -40,37 +56,27 @@ func Register[Set, Read any](pw *pahoWrap, topic string, handler HandlerFunc[Set
 		}
 	})
 
-	_, err := pw.c.Subscribe(context.Background(), &paho.Subscribe{
+	_, err = pw.c.Subscribe(context.Background(), &paho.Subscribe{
 		Subscriptions: []paho.SubscribeOptions{
 			{Topic: topicAll, QoS: 1},
 		},
 	})
 	if err != nil {
-		log.Fatalf("failed to subscrive to topic=%v err=%v", topicAll, err)
+		log.Fatalf("failed to subscrive to topicAll=%v err=%v", topicAll, err)
 	}
 
-	sender := func(readSet func() *Set) (err error) {
+	sender := func(readSet func() *Set) {
 		out, err := handler(readSet)
 		if err != nil {
 			log.Printf("failed to operate on topic=%v err=%v", topic, err)
-			return err // "valid" err
+			return // "valid" err, just failed to do thing
 		}
-
-		// failure to Marshal/Publish are fatal problems
-		payload, err := json.Marshal(out)
-		if err != nil {
-			log.Fatalf("couldn't JSON-encode output err=%v", err)
-		}
-		_, err = pw.c.Publish(pw.ctx, &paho.Publish{Topic: topic, Payload: payload})
-		if err != nil {
-			log.Fatalf("failed to publish err=%v", err)
-		}
-		return nil
+		announce(out)
 	}
 	go runner(ch, sender)
 }
 
-func runner[Set any](packetCh <-chan devicePacket, handler func(readSet func() *Set) (err error)) {
+func runner[Set any](packetCh <-chan devicePacket, handler func(readSet func() *Set)) {
 	neverCh := make(chan bool)
 	tokenCh := make(chan bool, 1)
 	tokenCh <- true
@@ -105,9 +111,9 @@ func runner[Set any](packetCh <-chan devicePacket, handler func(readSet func() *
 			json.Unmarshal(packet.payload, set)
 		}
 
-		ch := neverCh
+		ch := neverCh // we don't want to run the handler yet (will never trigger)
 		if pending {
-			ch = tokenCh
+			ch = tokenCh // we do want to run the handler, wait for token
 		}
 
 		lock.Unlock()
@@ -121,10 +127,7 @@ func runner[Set any](packetCh <-chan devicePacket, handler func(readSet func() *
 
 		// token available and we're pending: kickoff task
 		go func() {
-			err := handler(readSet)
-			if err != nil {
-				log.Printf("failed err=%v", err)
-			}
+			handler(readSet)
 			tokenCh <- true // return token
 		}()
 	}
