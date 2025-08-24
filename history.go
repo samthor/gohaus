@@ -17,26 +17,32 @@ type HistoryPacket struct {
 	Packet map[string]any `json:"p"`
 }
 
-func History(pw *pahoWrap, topic string, minDuration time.Duration, ch chan<- HistoryPacket) {
+type HistoryReq struct {
+	Paho        *pahoWrap
+	Topic       string
+	MinDuration time.Duration
+	Ch          chan<- HistoryPacket
+	GetKey      string
+}
+
+func History(req *HistoryReq) {
 	var lock sync.Mutex
 	var lastWrite time.Time
 
 	packetHandler := func(p *paho.Publish) {
+		now := time.Now()
+
 		lock.Lock()
 		defer lock.Unlock()
 
-		now := time.Now()
-		since := now.Sub(lastWrite)
-		if since < (minDuration / 2) {
-			return // ignore if <50%
-		}
-
-		out := HistoryPacket{Topic: topic}
+		// create packet
+		out := HistoryPacket{Topic: req.Topic, When: now.Unix()}
 		err := json.Unmarshal(p.Payload, &out.Packet)
 		if err != nil {
 			log.Fatalf("couldn't decode mqtt packet: %v", err)
 		}
 
+		// delete non-aggregatable
 		for key, value := range out.Packet {
 			_, ok := value.(float64)
 			if ok {
@@ -49,27 +55,42 @@ func History(pw *pahoWrap, topic string, minDuration time.Duration, ch chan<- Hi
 			delete(out.Packet, key)
 		}
 
-		out.When = now.Unix()
+		// filter (after log)
+		since := now.Sub(lastWrite)
+		if since < (req.MinDuration / 2) {
+			return // ignore if <50%
+		}
+
 		lastWrite = now
-		ch <- out
+		req.Ch <- out
 	}
 
-	pw.router.RegisterHandler(topic, func(p *paho.Publish) { go packetHandler(p) })
+	req.Paho.router.RegisterHandler(req.Topic, func(p *paho.Publish) { go packetHandler(p) })
+
+	if req.GetKey == "-" {
+		return // cannot request
+	}
 
 	ctx := context.Background()
-	topicGet := fmt.Sprintf("%s/get", topic) // TODO: what about + *
+	topicGet := fmt.Sprintf("%s/get", req.Topic) // TODO: what about + *
+
+	sendPayload := []byte(`{}`)
+	if req.GetKey != "" {
+		data := map[string]string{req.GetKey: ""}
+		sendPayload, _ = json.Marshal(data)
+	}
 
 	send := func() {
-		_, err := pw.c.Publish(ctx, &paho.Publish{
+		_, err := req.Paho.c.Publish(ctx, &paho.Publish{
 			Topic:   topicGet,
-			Payload: []byte("{}"), // z2m needs "request"
+			Payload: sendPayload,
 		})
 		if err != nil {
 			log.Fatalf("could not send get: %v", err)
 		}
 	}
 
-	t := time.NewTicker(minDuration)
+	t := time.NewTicker(req.MinDuration)
 	go func() {
 		for range t.C {
 			send()

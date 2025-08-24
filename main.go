@@ -10,14 +10,16 @@ import (
 	"path"
 	"time"
 
+	"github.com/eclipse/paho.golang/paho"
 	"github.com/samthor/gohaus/api/daikin"
 	"github.com/samthor/gohaus/api/powerwall"
 )
 
 var (
-	flagHistoryPath = flag.String("history", "", "if specified, path to log history")
-	flagURL         = flag.String("url", "mqtt://mqtt.haus.samthor.au:1883", "mqtt url to connect to")
-	flagTeslaSecret = flag.String("gw_pw", "", "Powerwall secret")
+	flagHistoryPath     = flag.String("history", "", "if specified, path to log history")
+	flagURL             = flag.String("url", "mqtt://mqtt.haus.samthor.au:1883", "mqtt url to connect to")
+	flagTeslaSecret     = flag.String("gw_pw", "", "Powerwall secret")
+	flagStandardHistory = flag.Duration("history_every", time.Second*30, "Standard time to fetch logs")
 )
 
 var (
@@ -34,13 +36,23 @@ func main() {
 	flag.Parse()
 	var err error
 
-	paho, err := connectToPaho(context.Background(), *flagURL)
+	pw, err := connectToPaho(context.Background(), *flagURL)
 	if err != nil {
 		log.Fatalf("could not connectToPaho url=%v err=%v", *flagURL, err)
 	}
 
-	configHistory(paho)
-	configDevices(paho)
+	// need to subscribe to all (ugh) for router to actually route
+	_, err = pw.c.Subscribe(context.Background(), &paho.Subscribe{
+		Subscriptions: []paho.SubscribeOptions{
+			{Topic: "#"},
+		},
+	})
+	if err != nil {
+		log.Fatalf("could not subscribe to all: %v", err)
+	}
+
+	configHistory(pw)
+	configDevices(pw)
 	<-make(chan bool) // sleep forever
 }
 
@@ -66,7 +78,6 @@ func writePacket(packet HistoryPacket) (err error) {
 }
 
 func configHistory(pw *pahoWrap) {
-
 	if *flagHistoryPath == "" {
 		log.Printf("not running history")
 		return
@@ -85,13 +96,16 @@ func configHistory(pw *pahoWrap) {
 		}
 	}()
 
+	d := *flagStandardHistory
+
 	for daikinID := range daikinDevices {
-		History(pw, fmt.Sprintf("virt/daikin-ac/%s", daikinID), time.Minute, ch)
+		History(&HistoryReq{Paho: pw, Topic: fmt.Sprintf("virt/daikin-ac/%s", daikinID), MinDuration: d * 2, Ch: ch})
 	}
-	History(pw, "virt/powerwall", time.Second*30, ch)
-	History(pw, "zigbee2mqtt/device/power/rack", time.Second*30, ch)
-	History(pw, "zigbee2mqtt/device/sensor/noc-etc", time.Second*30, ch)
-	History(pw, "zigbee2mqtt/device/sensor/whatever", time.Second*30, ch)
+
+	History(&HistoryReq{Paho: pw, Topic: "virt/powerwall", MinDuration: d, Ch: ch})
+	History(&HistoryReq{Paho: pw, Topic: "zigbee2mqtt/device/power/rack", MinDuration: d, Ch: ch, GetKey: "power"})
+	History(&HistoryReq{Paho: pw, Topic: "zigbee2mqtt/device/sensor/noc-etc", MinDuration: d, Ch: ch, GetKey: "temperature"})
+	History(&HistoryReq{Paho: pw, Topic: "zigbee2mqtt/device/sensor/whatever", MinDuration: d, Ch: ch, GetKey: "-"})
 
 }
 

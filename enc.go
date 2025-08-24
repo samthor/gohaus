@@ -6,8 +6,8 @@ import (
 )
 
 func encodeTopic(t string) (out string) {
-	if strings.ContainsRune(t, '-') {
-		log.Fatalf("can't encode -")
+	if strings.ContainsRune(t, '_') {
+		log.Fatalf("can't encode _")
 	}
-	return strings.ReplaceAll(t, "/", "-")
+	return strings.ReplaceAll(t, "/", "_")
 }
