@@ -1,4 +1,4 @@
-package main
+package daikin
 
 import (
 	"context"
@@ -48,7 +48,7 @@ func (dv *DaikinValues) String() string {
 	return fmt.Sprintf("{%s}", strings.Join(parts, " "))
 }
 
-func runDaikin(ctx context.Context, device daikinac.Device, readSet func() (set *DaikinValues)) (v DaikinValues, err error) {
+func Run(ctx context.Context, device daikinac.Device, readSet func() (set *DaikinValues)) (v DaikinValues, err error) {
 	start := time.Now()
 
 	var si daikinac.SensorInfo

@@ -7,8 +7,13 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/eclipse/paho.golang/paho"
+)
+
+const (
+	defaultTimeout = time.Second * 20
 )
 
 type devicePacket struct {
@@ -19,7 +24,7 @@ type devicePacket struct {
 // HandlerFunc is used to handle a z2m-like virtual node.
 // It is called on a "/get" or a "/set", and the passed readSet method must be called to check if there is a Set which must be enacted.
 // This is a func as the Set may arrive 'late'.
-type HandlerFunc[Set, Read any] func(readSet func() (out *Set)) (Read, error)
+type HandlerFunc[Set, Read any] func(ctx context.Context, readSet func() (out *Set)) (Read, error)
 
 // Register creates a virtual z2m-like virtual device rooted at the given topic.
 // The handler must use the `readSet` function to check if there's data to send, otherwise it will be called forever.
@@ -58,7 +63,10 @@ func Register[Set, Read any](pw *pahoWrap, topic string, handler HandlerFunc[Set
 	}
 
 	sender := func(readSet func() *Set) {
-		out, err := handler(readSet)
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+		defer cancel()
+
+		out, err := handler(timeoutCtx, readSet)
 		if err != nil {
 			log.Printf("failed to operate on topic=%v err=%v", topic, err)
 			return // "valid" err, just failed to do thing

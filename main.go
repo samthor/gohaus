@@ -2,17 +2,32 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"path"
+	"time"
 
-	"github.com/samthor/daikinac"
+	"github.com/samthor/gohaus/api/daikin"
 	"github.com/samthor/gohaus/api/powerwall"
 )
 
 var (
+	flagHistoryPath = flag.String("history", "", "if specified, path to log history")
 	flagURL         = flag.String("url", "mqtt://mqtt.haus.samthor.au:1883", "mqtt url to connect to")
 	flagTeslaSecret = flag.String("gw_pw", "", "Powerwall secret")
+)
+
+var (
+	daikinDevices = map[string]daikin.Device{
+		"den":         {Host: "192.168.3.146"},
+		"living-room": {Host: "192.168.3.152"},
+		"bedroom":     {Host: "192.168.3.204"},
+		"loft":        {Host: "192.168.3.225"},
+		"office":      {Host: "192.168.3.245", UUID: "f45aab28604811eca7c4737954d1686f"},
+	}
 )
 
 func main() {
@@ -24,28 +39,68 @@ func main() {
 		log.Fatalf("could not connectToPaho url=%v err=%v", *flagURL, err)
 	}
 
-	config(context.Background(), paho)
+	configHistory(paho)
+	configDevices(paho)
 	<-make(chan bool) // sleep forever
 }
 
-func config(ctx context.Context, pw *pahoWrap) {
-	_ = ctx
+func writePacket(packet HistoryPacket) (err error) {
+	enc := encodeTopic(packet.Topic)
+
+	p := path.Join(*flagHistoryPath, enc)
+
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0660)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	b, err := json.Marshal(packet)
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+
+	_, err = f.Write(b)
+	return err
+}
+
+func configHistory(pw *pahoWrap) {
+
+	if *flagHistoryPath == "" {
+		log.Printf("not running history")
+		return
+	}
+	log.Printf("writing history to: %v", *flagHistoryPath)
+
+	ch := make(chan HistoryPacket)
+	go func() {
+		os.MkdirAll(*flagHistoryPath, 0775)
+
+		for packet := range ch {
+			err := writePacket(packet)
+			if err != nil {
+				log.Fatalf("could not write packet=%+v: %v", packet, err)
+			}
+		}
+	}()
+
+	for daikinID := range daikinDevices {
+		History(pw, fmt.Sprintf("virt/daikin-ac/%s", daikinID), time.Minute, ch)
+	}
+	History(pw, "virt/powerwall", time.Second*30, ch)
+	History(pw, "zigbee2mqtt/device/power/rack", time.Second*30, ch)
+	History(pw, "zigbee2mqtt/device/sensor/noc-etc", time.Second*30, ch)
+	History(pw, "zigbee2mqtt/device/sensor/whatever", time.Second*30, ch)
+
+}
+
+func configDevices(pw *pahoWrap) {
 
 	// -- daikin ACs
 
-	devices := map[string]daikinac.Device{
-		"den":         {Host: "192.168.3.146"},
-		"living-room": {Host: "192.168.3.152"},
-		"bedroom":     {Host: "192.168.3.204"},
-		"loft":        {Host: "192.168.3.225"},
-		"office":      {Host: "192.168.3.245", UUID: "f45aab28604811eca7c4737954d1686f"},
-	}
-
-	for daikinID, device := range devices {
-		runner := func(readSet func() (set *DaikinValues)) (DaikinValues, error) {
-			return runDaikin(context.Background(), device, readSet)
-		}
-		Register(pw, fmt.Sprintf("virt/daikin-ac/%s", daikinID), runner)
+	for daikinID, device := range daikinDevices {
+		Register(pw, fmt.Sprintf("virt/daikin-ac/%s", daikinID), device.Run)
 	}
 
 	// -- battery
@@ -53,9 +108,9 @@ func config(ctx context.Context, pw *pahoWrap) {
 	if *flagTeslaSecret != "" {
 		td := &powerwall.TEDApi{Secret: *flagTeslaSecret}
 
-		runner := func(readSet func() (out *struct{})) (powerwall.SimpleStatus, error) {
+		runner := func(ctx context.Context, readSet func() (out *struct{})) (powerwall.SimpleStatus, error) {
 			readSet()
-			status, err := powerwall.GetSimpleStatus(context.Background(), td)
+			status, err := powerwall.GetSimpleStatus(ctx, td)
 			if err != nil {
 				return powerwall.SimpleStatus{}, err
 			}
@@ -66,7 +121,7 @@ func config(ctx context.Context, pw *pahoWrap) {
 
 	// -- virtual day/night
 
-	Register(pw, "virt/earth3", func(readSet func() (out *struct{})) (EarthValues, error) {
+	Register(pw, "virt/earth3", func(ctx context.Context, readSet func() (out *struct{})) (EarthValues, error) {
 		readSet()
 		return EarthValues{}, nil // TODO
 	})
